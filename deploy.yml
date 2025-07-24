@@ -1,0 +1,170 @@
+name: Deploy James Hardie Technical Expert to Azure
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  AZURE_WEBAPP_NAME: hardie-technical-expert
+  AZURE_WEBAPP_PACKAGE_PATH: '.'
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: Build Application
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Create virtual environment
+      run: |
+        python -m venv venv
+        source venv/bin/activate
+
+    - name: Install cloud-optimized dependencies
+      run: |
+        source venv/bin/activate
+        pip install --upgrade pip
+        pip install -r requirements-cloud.txt
+
+    - name: Validate application startup
+      run: |
+        source venv/bin/activate
+        python -c "import app; print('✅ App imports successfully')"
+
+    - name: Run basic tests
+      run: |
+        source venv/bin/activate
+        python -c "
+        from app import app
+        with app.test_client() as client:
+            response = client.get('/api/health')
+            print(f'Health check status: {response.status_code}')
+            assert response.status_code == 200
+        print('✅ Basic tests passed')
+        "
+
+    - name: Upload artifact for deployment
+      uses: actions/upload-artifact@v4
+      with:
+        name: python-app
+        path: |
+          .
+          !venv/
+          !.git/
+          !cache/
+          !pdf/
+          !structured_manuals/
+          !visual_assets_optimized/
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    environment:
+      name: 'production'
+      url: ${{ steps.deploy-to-webapp.outputs.webapp-url }}
+
+    steps:
+    - name: Download artifact from build job
+      uses: actions/download-artifact@v4
+      with:
+        name: python-app
+        path: .
+
+    - name: Deploy to Azure Web App
+      id: deploy-to-webapp
+      uses: azure/webapps-deploy@v3
+      with:
+        app-name: ${{ env.AZURE_WEBAPP_NAME }}
+        publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+        package: ${{ env.AZURE_WEBAPP_PACKAGE_PATH }}
+
+    - name: Configure Azure OpenAI App Settings
+      uses: azure/appservice-settings@v1
+      with:
+        app-name: ${{ env.AZURE_WEBAPP_NAME }}
+        app-settings-json: |
+          [
+            {
+              "name": "ENVIRONMENT", 
+              "value": "production",
+              "slotSetting": false
+            },
+            {
+              "name": "FLASK_ENV",
+              "value": "production", 
+              "slotSetting": false
+            },
+            {
+              "name": "FLASK_DEBUG",
+              "value": "false",
+              "slotSetting": false
+            },
+            {
+              "name": "PORT",
+              "value": "8000",
+              "slotSetting": false
+            },
+            {
+              "name": "AZURE_OPENAI_ENDPOINT",
+              "value": "${{ secrets.AZURE_OPENAI_ENDPOINT }}",
+              "slotSetting": false
+            },
+            {
+              "name": "AZURE_OPENAI_KEY", 
+              "value": "${{ secrets.AZURE_OPENAI_KEY }}",
+              "slotSetting": false
+            },
+            {
+              "name": "AZURE_OPENAI_CHAT_MODEL",
+              "value": "gpt-4",
+              "slotSetting": false
+            },
+            {
+              "name": "AZURE_OPENAI_EMBEDDING_MODEL",
+              "value": "text-embedding-ada-002", 
+              "slotSetting": false
+            },
+            {
+              "name": "AZURE_OPENAI_API_VERSION",
+              "value": "2024-02-01",
+              "slotSetting": false
+            },
+            {
+              "name": "OPENAI_API_KEY",
+              "value": "${{ secrets.OPENAI_API_KEY }}",
+              "slotSetting": false
+            }
+          ]
+
+  test-deployment:
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    
+    steps:
+    - name: Test deployed application
+      run: |
+        # Wait for deployment to complete
+        sleep 30
+        
+        # Test health endpoint
+        curl -f https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/api/health || exit 1
+        
+        # Test basic query
+        curl -f -X POST https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/api/query \
+          -H "Content-Type: application/json" \
+          -d '{"query":"What is HardiePlank siding?"}' || exit 1
+        
+        echo "✅ Deployment tests passed"
