@@ -14,6 +14,13 @@ import time
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 
+# Load environment variables
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 # Minimal imports for cloud deployment
 from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
@@ -54,60 +61,78 @@ def initialize_ai_clients():
     """Initialize AI clients with cloud-optimized configuration"""
     global azure_client, openai_client
     
+    logger.info("🔧 Starting AI client initialization...")
+    logger.info(f"Azure OpenAI available: {AZURE_AVAILABLE}")
+    logger.info(f"Standard OpenAI available: {STANDARD_OPENAI_AVAILABLE}")
+    
+    # Reset clients
+    azure_client = None
+    openai_client = None
+    
     # Azure OpenAI (preferred for cloud)
     if AZURE_AVAILABLE:
-        try:
-            endpoint = os.getenv('AZURE_OPENAI_ENDPOINT')
-            api_key = os.getenv('AZURE_OPENAI_KEY')
-            
-            if endpoint:
-                if api_key:
-                    # Use API key authentication
-                    azure_client = AzureOpenAI(
-                        api_key=api_key,
-                        api_version="2024-02-01",
-                        azure_endpoint=endpoint
-                    )
-                    logger.info("✅ Azure OpenAI initialized with API key")
-                else:
-                    # Use managed identity (preferred for cloud)
-                    try:
-                        credential = DefaultAzureCredential()
-                        azure_client = AzureOpenAI(
-                            azure_ad_token_provider=credential,
-                            api_version="2024-02-01",
-                            azure_endpoint=endpoint
-                        )
-                        logger.info("✅ Azure OpenAI initialized with managed identity")
-                    except Exception as e:
-                        logger.warning(f"Managed identity failed: {e}")
-        except Exception as e:
-            logger.error(f"Azure OpenAI initialization failed: {e}")
+        endpoint = os.getenv('AZURE_OPENAI_ENDPOINT')
+        api_key = os.getenv('AZURE_OPENAI_KEY')
+        
+        logger.info(f"Azure endpoint: {'SET' if endpoint else 'NOT SET'}")
+        logger.info(f"Azure API key: {'SET' if api_key else 'NOT SET'}")
+        
+        if endpoint and api_key:
+            try:
+                # Use API key authentication with minimal parameters
+                azure_client = AzureOpenAI(
+                    api_key=api_key,
+                    api_version="2024-02-01",
+                    azure_endpoint=endpoint
+                )
+                logger.info("✅ Azure OpenAI initialized with API key")
+                logger.info(f"Azure client type: {type(azure_client)}")
+            except Exception as e:
+                logger.error(f"Azure OpenAI initialization failed: {e}")
+                azure_client = None
+        else:
+            logger.warning("Azure OpenAI credentials not found")
+    else:
+        logger.warning("Azure OpenAI library not available")
     
     # Standard OpenAI (fallback)
     if STANDARD_OPENAI_AVAILABLE:
-        try:
-            openai_key = os.getenv('OPENAI_API_KEY')
-            if openai_key:
-                global openai_client
+        openai_key = os.getenv('OPENAI_API_KEY')
+        logger.info(f"Standard OpenAI key: {'SET' if openai_key else 'NOT SET'}")
+        
+        if openai_key:
+            try:
                 openai_client = openai.OpenAI(api_key=openai_key)
                 logger.info("✅ Standard OpenAI initialized as fallback")
-        except Exception as e:
-            logger.error(f"Standard OpenAI initialization failed: {e}")
+                logger.info(f"OpenAI client type: {type(openai_client)}")
+            except Exception as e:
+                logger.error(f"Standard OpenAI initialization failed: {e}")
+                openai_client = None
+        else:
+            logger.warning("Standard OpenAI API key not found")
+    else:
+        logger.warning("Standard OpenAI library not available")
+    
+    logger.info(f"Final status - Azure: {azure_client is not None}, OpenAI: {openai_client is not None}")
     
     if not azure_client and not openai_client:
         logger.error("❌ No AI clients available")
+    else:
+        logger.info(f"✅ {('Azure' if azure_client else '') + (' + ' if azure_client and openai_client else '') + ('OpenAI' if openai_client else '')} client(s) ready")
 
 def generate_response(messages: List[Dict], max_tokens: int = 1500) -> Dict[str, Any]:
     """Generate response using available AI client"""
-    global request_count, error_count
+    global request_count, error_count, azure_client, openai_client
     
     request_count += 1
     start_time = time.time()
     
+    logger.info(f"🔍 Generate response called - Azure: {'✅' if azure_client else '❌'}, OpenAI: {'✅' if openai_client else '❌'}")
+    
     # Try Azure OpenAI first
     if azure_client:
         try:
+            logger.info("🚀 Using Azure OpenAI for response")
             response = azure_client.chat.completions.create(
                 model=os.getenv('AZURE_OPENAI_CHAT_MODEL', 'gpt-4'),
                 messages=messages,
@@ -133,6 +158,7 @@ def generate_response(messages: List[Dict], max_tokens: int = 1500) -> Dict[str,
     # Fallback to standard OpenAI
     if openai_client:
         try:
+            logger.info("🚀 Using Standard OpenAI for response")
             response = openai_client.chat.completions.create(
                 model="gpt-4o-mini",  # Cost-effective model
                 messages=messages,
@@ -156,6 +182,7 @@ def generate_response(messages: List[Dict], max_tokens: int = 1500) -> Dict[str,
             error_count += 1
     
     # No AI available
+    logger.error("❌ No AI clients available for response generation")
     error_count += 1
     return {
         'content': "I'm temporarily unable to process your request. Please try again later.",
@@ -318,9 +345,27 @@ def home():
     """
     return html
 
+@app.route('/api/reinit')
+def reinit_clients():
+    """Reinitialize AI clients for testing"""
+    global azure_client, openai_client
+    azure_client = None
+    openai_client = None
+    
+    initialize_ai_clients()
+    
+    return jsonify({
+        'message': 'AI clients reinitialized',
+        'azure_available': azure_client is not None,
+        'openai_available': openai_client is not None,
+        'timestamp': datetime.now().isoformat()
+    })
+
 @app.route('/api/health')
 def health():
     """Health check endpoint"""
+    global azure_client, openai_client, request_count, error_count
+    
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
@@ -328,7 +373,11 @@ def health():
         'openai_available': openai_client is not None,
         'requests_processed': request_count,
         'error_count': error_count,
-        'environment': os.getenv('ENVIRONMENT', 'unknown')
+        'environment': os.getenv('ENVIRONMENT', 'unknown'),
+        'debug_info': {
+            'azure_client_type': type(azure_client).__name__ if azure_client else 'None',
+            'openai_client_type': type(openai_client).__name__ if openai_client else 'None'
+        }
     })
 
 @app.route('/api/metrics')
