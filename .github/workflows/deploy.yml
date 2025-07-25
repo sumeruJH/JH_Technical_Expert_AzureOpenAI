@@ -160,10 +160,10 @@ jobs:
         sleep 30
         
         # Test health endpoint
-        curl -f https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/api/health || exit 1
+        curl -f https://hardie-technical-expert-dzcmfjgnf0emhndn.westus-01.azurewebsites.net/api/health || exit 1
         
         # Test basic query
-        curl -f -X POST https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/api/query \
+        curl -f -X POST https://hardie-technical-expert-dzcmfjgnf0emhndn.westus-01.azurewebsites.net/api/query \
           -H "Content-Type: application/json" \
           -d '{"query":"What is HardiePlank siding?"}' || exit 1
         
