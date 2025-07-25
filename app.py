@@ -89,6 +89,7 @@ def initialize_ai_clients():
         try:
             openai_key = os.getenv('OPENAI_API_KEY')
             if openai_key:
+                global openai_client
                 openai_client = openai.OpenAI(api_key=openai_key)
                 logger.info("✅ Standard OpenAI initialized as fallback")
         except Exception as e:
